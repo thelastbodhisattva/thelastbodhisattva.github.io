@@ -1,0 +1,73 @@
+---
+title: "How I score whale wallets on Polymarket"
+description: "Not all big trades are smart money. Here's the 11-factor system I built to separate signal from noise."
+date: "2026-01-28"
+tags: ["Polymarket", "On-chain", "Analytics"]
+---
+
+# How I score whale wallets on Polymarket
+
+A $50k trade from a fresh wallet is not the same as a $50k trade from someone with a 90% win rate across 200 markets. The dollar amount is identical. The information content is completely different.
+
+Polymarket sees thousands of trades daily. Most of it is noise. Market makers, people gambling, wash trading. I wanted to find the wallets whose activity actually predicted outcomes.
+
+## The 11 factors
+
+I ended up with 11 things that seemed to matter. Each contributes to a score from 0 to 100.
+
+**Wallet history**
+
+1. Age. Older wallets have track records you can analyze.
+2. Markets traded. More breadth means more data points.
+3. Win rate. The obvious one.
+
+**Trade characteristics**
+
+4. Position size in absolute terms.
+5. Size relative to their usual. If someone usually bets $5k and suddenly drops $100k, that's interesting.
+6. Timing. How close to resolution?
+
+**Behavioral signals**
+
+7. Conviction. Do they add to losing positions or cut and run?
+8. Contrarian moves. Are they fading the crowd?
+9. Cluster activity. Do they trade at the same time as other known whales?
+
+**Technical**
+
+10. Wallet type. EOAs behave differently than smart contracts.
+11. Transaction patterns. Gas usage, timing, activity bursts.
+
+## The scoring
+
+```typescript
+const score = weights.reduce((sum, w, i) => (
+  sum + w * normalizedFactors[i]
+), 0);
+
+return Math.min(100, Math.max(0, score));
+```
+
+Nothing fancy. Weighted sum, clamped to 0-100. The weights came from backtesting against historical market resolutions.
+
+## What counts as a whale
+
+Depends on the market. On a $50k market, $5k is a lot. On a $10M market, it's a rounding error.
+
+| Market size | Threshold |
+|-------------|-----------|
+| Under $100k | $5,000 |
+| $100k to $1M | $15,000 |
+| Over $1M | $50,000 |
+
+## An example that worked
+
+Wallet `0xabc...` dropped $120k on a political market when the price was at 35 cents. The system scored it 87.
+
+Why? 94% historical win rate. 3-year-old wallet. Going against the crowd. Added to the position twice after the initial buy.
+
+Four hours later, the market was at 78 cents.
+
+This doesn't always happen. But when a high-scoring wallet moves, I pay attention.
+
+The code is in the GottaTrackEmAll repo on GitHub if you want to dig into the implementation.

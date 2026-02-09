@@ -1,0 +1,57 @@
+---
+title: "Predicting funding rates before the market moves"
+description: "How I built an ML model to predict perpetual futures funding rates. The approach, the features, and what actually worked."
+date: "2026-02-01"
+tags: ["DeFi", "Machine Learning", "Trading"]
+---
+
+# Predicting funding rates before the market moves
+
+Perpetual futures never expire. That's their whole thing. But they still need to stay pegged to spot price somehow. The mechanism for this is funding rate, a periodic payment between longs and shorts.
+
+Every 8 hours, one side pays the other:
+
+- Positive funding: longs pay shorts
+- Negative funding: shorts pay longs
+
+If you know where funding is going before it gets there, you can position accordingly. That was the goal.
+
+## What I tried
+
+Started with the obvious stuff. Historical funding rates going back 30 days, open interest changes, order book imbalances. The features looked like this:
+
+```python
+features = [
+    'funding_rate_lag_1',
+    'funding_rate_lag_2', 
+    'oi_change_pct',
+    'bid_ask_imbalance',
+    'volume_delta'
+]
+```
+
+Open interest changes turned out to be surprisingly useful. When OI spikes without price movement, someone is positioning. The order book data was noisier than I expected.
+
+## Normalizing the signal
+
+Raw funding rates are noisy. Small movements happen all the time and mean nothing. I used z-scores to filter for statistically significant moves:
+
+```
+z = (x - mean) / std
+```
+
+Anything above 2 or below -2 gets flagged as a potential signal. Everything else is ignored.
+
+## What actually worked
+
+After 12 months of backtesting on BTC perpetuals:
+
+| Metric | Result |
+|--------|--------|
+| Directional accuracy | 72.3% |
+| Brier score | 0.18 |
+| Sharpe (funding arb) | 2.4 |
+
+72% directional accuracy sounds good until you realize the edge is thin. Transaction costs eat into it. Slippage eats into it. Still, it works well enough to be part of a larger system.
+
+The model lives in Calibrasteme now, running alongside the other signals.
