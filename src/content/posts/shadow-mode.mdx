@@ -1,0 +1,176 @@
+---
+title: "Shadow mode: a regime classifier that never trades"
+description: "How I built a system that watches BTC 24/7, classifies market regimes every 60 seconds, and tells the rest of the bot what's happening without touching a single order."
+date: "2026-02-10"
+tags: ["Calibrasteme", "BTC", "Regime detection", "Real-time"]
+---
+
+Around January I had a problem. My bot had indicators. It had execution logic. It had risk management. What it didn't have was a coherent answer to "what is the market doing right now?"
+
+Not price direction. Direction is one axis. I needed to know the difference between a quiet sideways market and a volatile sideways market. Between a slow grind down and a liquidation cascade. Between accumulation and distribution. These are different animals and they need different responses.
+
+So I built Shadow Mode.
+
+## What it actually does
+
+Shadow Mode runs a classification loop every 60 seconds. It pulls data from seven sources, extracts features, converts them to boolean primitives, and matches those primitives against a regime library. The regime with the best match wins.
+
+It never places an order. It just watches and labels.
+
+Here's the data pipeline:
+
+```
+Binance WebSocket ──┐
+Binance REST API ───┤
+Multi-Source Agg ───┤
+Depth Manager (L2) ─┼──▶ classifier.js ──▶ MongoDB
+Funding Predictor ──┤                        ▼
+Options GEX ────────┤              scheduler.js (4H alerts)
+Whale Monitor ──────┘              Discord / Twitter
+```
+
+Every 60 seconds, `_classify()` fires. It grabs 200 4H candles from Binance (about 33 days of history), checks the WebSocket stream for recent liquidations and large trades, pulls external data like Fear/Greed index and cross-exchange funding rates, and reads the order book.
+
+## Features and primitives
+
+From the raw data, the system computes EMAs, ATR, realized volatility, volume ratios, candle body percentages, and a slow-crash score. These features then become boolean primitives. Some examples:
+
+| Primitive | What triggers it |
+|---|---|
+| `ema_slope_negative` | EMA20 below EMA50 |
+| `atr_explosion` | ATR exceeds 1.5x its average |
+| `panic_candle` | Candle body larger than 3% |
+| `volume_spike_3x` | Volume over 2.5x the 20-period average |
+| `funding_extreme_negative` | Funding rate below -0.03% |
+| `liquidation_cascade` | Open interest drops more than 8% |
+| `fear_extreme` | Fear/Greed index under 20 |
+| `cum_ret_7d_negative` | 7-day cumulative return is negative |
+| `depth_erosion` | Order book bids thinning out |
+| `spread_stress` | Bid-ask spread widening abnormally |
+
+The primitives feed into `stateMachine.json`, which defines ten regimes:
+
+- **RANGE_LOW_VOL** / **RANGE_HIGH_VOL** -- sideways markets, one quiet, one not
+- **ACCUMULATION** / **DISTRIBUTION** -- smart money positioning under the surface
+- **HIGH_VOL_CRASH** / **CAPITULATION** -- panic, liquidation cascades, red candles
+- **GRINDING_BEAR** / **SLOW_GRIND_CRASH** -- slow bleeds
+- **BLOW_OFF_TOP** -- parabolic exhaustion
+- **BOUNCE** -- recovery from a crash
+
+Each regime has defining primitives. The match is scored by overlap, and the highest-scoring regime is the raw classification for that tick.
+
+## The flapping problem
+
+This was the first thing that broke.
+
+The raw classifier was oscillating between regimes faster than the market was actually moving. I added three gates to fix it:
+
+1. **Confidence threshold** -- a classification below 75% confidence gets dropped
+2. **Confirmation window** -- need 3 consecutive readings of the same regime (3 minutes minimum) before accepting a change
+3. **Cooldown** -- after a confirmed change, block further changes for 15 minutes
+
+There's also a confidence cap. Noisy regimes like BOUNCE, ACCUMULATION, and DISTRIBUTION get capped at 85% max. Even when the primitive match is perfect, the system acknowledges uncertainty.
+
+## Seven days of real data (Feb 2–9, 2026)
+
+The latest snapshot I pulled is from **February 9, 2026 at 23:19 UTC+3**. The instance had been running for 7.3 days straight — started February 2 at 16:51. In that window it processed **11,412 classifications** (one per minute, every minute).
+
+The regime history tells a story about the market that week:
+
+**Feb 2 evening**: The system started in VOL_COMPRESSION, then shifted to ACCUMULATION around 20:56. The active crisis indicators at that point were `funding_capitulation`, `funding_extreme_negative`, `fear_extreme`, and `extreme_negative_skew`. Ugly backdrop, but price was compressing.
+
+**Feb 2–3**: The classifier bounced back and forth between ACCUMULATION and BOUNCE a handful of times. The confirmation readings show it was fighting. Then the large trades started:
+
+```json
+// Feb 3, 00:44 — three fills in the same second at $78,310
+{"price": 78310, "quantity": 15.943, "usdValue": 1248496, "isBuyerMaker": false}
+{"price": 78310, "quantity": 12.868, "usdValue": 1007693, "isBuyerMaker": false}
+{"price": 78310, "quantity": 34.83,  "usdValue": 2727537, "isBuyerMaker": false}
+```
+
+Three aggressive buys in the same second totaling $4.98M. Someone was loading.
+
+Twenty minutes later, at **01:05**, the biggest single fill in the entire 7-day run:
+
+```json
+{"price": 78633.3, "quantity": 114.089, "usdValue": 8971194, "isBuyerMaker": false}
+```
+
+114 BTC. **$8.97 million**. One trade. `isBuyerMaker: false` — the taker was buying, lifting the ask. Twelve seconds later, another 27.4 BTC ($2.15M) in the same direction.
+
+**Feb 5–6**: Market rolled over. The system transitioned to GRINDING_BEAR on February 5 at 15:25, confirmed at **100% confidence** with 10 simultaneous crisis indicators:
+
+```json
+{
+  "from": "ACCUMULATION",
+  "to": "GRINDING_BEAR",
+  "confidence": 1,
+  "crisis_indicators": [
+    "funding_capitulation",
+    "cum_ret_7d_negative",
+    "cum_ret_14d_negative",
+    "slope_decay_negative",
+    "negative_skew",
+    "extreme_negative_skew",
+    "volume_consensus_up",
+    "funding_divergence",
+    "fear_extreme",
+    "oi_consensus_up"
+  ]
+}
+```
+
+Seven-day, fourteen-day returns both negative. Funding in capitulation territory. Fear extreme. Skew crushed negative. The system locked onto GRINDING_BEAR and held it. Over the next day it toggled between GRINDING_BEAR and TRENDING_DOWN a few times — both bearish regimes, just different flavors. One transition had **187 confirmation readings** before finally switching, meaning the classifier saw the same regime 187 minutes straight before it budged.
+
+**Feb 7–9**: Things calmed down. The crisis indicators started dropping off. `cum_ret_30d_negative` disappeared. Then `cum_ret_14d_negative`. By Feb 9 the system was back in ACCUMULATION/BOUNCE territory with a shrinking indicator set: mostly `negative_skew`, `volume_consensus_up`, `fear_extreme`.
+
+The last confirmed regime change before the snapshot was at Feb 9, 23:02 — from BOUNCE to ACCUMULATION. Current state: **ACCUMULATION**.
+
+## The escalation filter
+
+Even after a regime change is confirmed, Discord alerts go through one more gate. The system requires at least 2 distinct indicator families before escalating.
+
+Families are grouped by type: volume, price, liquidation, funding, open interest, trade. Two volume indicators still count as one family. You need, say, one volume signal and one price signal to hit the threshold.
+
+High-impact regimes (CAPITULATION, HIGH_VOL_CRASH, BLOW_OFF_TOP) bypass this gate. If the classifier says the market is in capitulation, the alert goes out regardless.
+
+Alerts that get blocked are logged with a `[SOFT]` tag and a full suppression JSON. I can review what would have fired.
+
+## Log structure
+
+Shadow Mode dumps a JSON snapshot to `shadow_logs/` every 5 minutes. The files pile up — 7.3 days produced hundreds of snapshots.
+
+Each file has:
+
+- `startTime` / `runtime` — process start timestamp and uptime in milliseconds
+- `classificationCount` — total ticks processed (one per minute)
+- `currentRegime` — what the system thinks right now
+- `regimeHistory` — every confirmed regime change with timestamps, confidence scores, which crisis indicators were active, and how many confirmation readings preceded the transition
+- `crisisAlerts` — raw WebSocket events: large trades (> $500k)
+
+For the trade events, `isBuyerMaker` is the one that trips people up. `true` means the maker was a buyer, so the taker sold into them. `isBuyerMaker: true` = aggressive sell. Counter-intuitive but that's how Binance reports it.
+
+## MongoDB persistence
+
+Shadow Mode survives restarts. On startup it reads the last state from the `BTCRegime` collection:
+
+- The current regime (doesn't reset to UNKNOWN)
+- The classification count (continues from where it left off)
+- The last regime change timestamp (so the cooldown timer stays intact)
+- Pending regime state (if it was mid-confirmation when the process died)
+
+The 7.3-day continuous run above is one example. The system started Feb 2 and was still classifying when I pulled this data Feb 9 — no interruptions, no resets.
+
+## What I'd change
+
+The BOUNCE/ACCUMULATION oscillation is the most visible issue in this data. The system toggled between them dozens of times across the week. Both are "not crashing" regimes, but the constant back-and-forth adds noise. I'm considering either merging them into a single regime or raising the confidence threshold for transitions between them specifically.
+
+The cooldown of 15 minutes is probably too long for genuine crash scenarios. GRINDING_BEAR should probably have a shorter cooldown, maybe 5 minutes, since multi-stage breakdowns can evolve fast.
+
+And the `confirmationReadings` field is already tracking useful signal — 187 readings means near-certainty. A weighted confirmation that lets high-reading counts accelerate future transitions from the same regime pair would reduce lag without sacrificing stability.
+
+None of these are urgent. The system works. But I keep staring at the logs and seeing edges to smooth out.
+
+---
+
+*Data referenced in this post is from shadow log `shadow_1770675540503.json`, a snapshot taken Feb 9, 2026 at 23:19 UTC+3. The instance started Feb 2, 2026 at 16:51 UTC+3 and ran continuously for 7.3 days, processing 11,412 classifications.*

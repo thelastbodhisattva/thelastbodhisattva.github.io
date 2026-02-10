@@ -4,11 +4,17 @@ import { useMemo } from "react";
 import useSWR from "swr";
 import { fetchFundingRatePrediction } from "@/lib/blockchain";
 
+/* ─────────────────────────── types ─────────────────────────── */
+
 interface ChartPoint {
     x: number;
     y: number;
     value: number;
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   Component
+   ═══════════════════════════════════════════════════════════════ */
 
 export default function FundingRateChart() {
     const { data, isLoading } = useSWR(
@@ -22,9 +28,9 @@ export default function FundingRateChart() {
 
     const fundingData = data || [];
 
-    // Chart calculations
+    /* ── Chart calculations ── */
     const chartData = useMemo(() => {
-        if (fundingData.length === 0) return { actualPoints: [], predictedPoints: [], minY: 0, maxY: 0 };
+        if (fundingData.length === 0) return { actualPoints: [], predictedPoints: [], minY: 0, maxY: 0, zeroY: 100 };
 
         const padding = 40;
         const width = 100;
@@ -35,22 +41,26 @@ export default function FundingRateChart() {
         const maxY = Math.max(...values) + 0.01;
         const yRange = maxY - minY;
 
+        const scaleY = (v: number) => height - ((v - minY) / yRange) * (height - padding) - padding / 2;
+
         const actualPoints: ChartPoint[] = fundingData.map((d, i) => ({
             x: (i / (fundingData.length - 1)) * (width - padding * 2) + padding,
-            y: height - ((d.actual - minY) / yRange) * (height - padding) - padding / 2,
+            y: scaleY(d.actual),
             value: d.actual,
         }));
 
         const predictedPoints: ChartPoint[] = fundingData.map((d, i) => ({
             x: (i / (fundingData.length - 1)) * (width - padding * 2) + padding,
-            y: height - ((d.predicted - minY) / yRange) * (height - padding) - padding / 2,
+            y: scaleY(d.predicted),
             value: d.predicted,
         }));
 
-        return { actualPoints, predictedPoints, minY, maxY };
+        const zeroY = minY < 0 && maxY > 0 ? scaleY(0) : -1;
+
+        return { actualPoints, predictedPoints, minY, maxY, zeroY };
     }, [fundingData]);
 
-    // Create SVG path from points
+    /* ── SVG path builder ── */
     const createPath = (points: ChartPoint[]) => {
         if (points.length === 0) return "";
         return points.reduce((path, point, i) => {
@@ -58,10 +68,9 @@ export default function FundingRateChart() {
         }, "");
     };
 
-    // Calculate accuracy
+    /* ── Accuracy ── */
     const accuracy = useMemo(() => {
         if (fundingData.length === 0) return 0;
-
         let correct = 0;
         for (let i = 1; i < fundingData.length; i++) {
             const actualDir = fundingData[i].actual > fundingData[i - 1].actual;
@@ -71,58 +80,130 @@ export default function FundingRateChart() {
         return ((correct / (fundingData.length - 1)) * 100).toFixed(1);
     }, [fundingData]);
 
+    /* ── Derived state ── */
+    const latestData = fundingData[fundingData.length - 1];
+    const isPositive = latestData && latestData.actual >= 0;
+    const rateColor = isPositive ? "#34d399" : "#ef4444";
+    const rateGlow = isPositive ? "rgba(52,211,153,0.25)" : "rgba(239,68,68,0.25)";
+
+    /* ── Loading ── */
     if (isLoading) {
         return (
-            <div className="glass rounded-2xl p-6 h-[400px] flex items-center justify-center">
-                <div className="flex flex-col items-center gap-4">
-                    <div className="w-6 h-6 border border-white/20 border-t-white/60 rounded-full animate-spin" />
-                    <p className="text-white/40 text-sm">Loading funding rate data...</p>
+            <div className="glass rounded-2xl p-6 h-[400px] flex flex-col gap-4 animate-pulse">
+                <div className="h-5 w-1/3 rounded bg-white/5" />
+                <div className="h-3 w-2/3 rounded bg-white/5" />
+                <div className="flex-1 rounded-xl bg-white/[0.02]" />
+                <div className="flex gap-3">
+                    <div className="h-8 w-20 rounded-full bg-white/5" />
+                    <div className="h-8 w-20 rounded-full bg-white/5" />
                 </div>
             </div>
         );
     }
 
-    const latestData = fundingData[fundingData.length - 1];
-
     return (
-        <div className="glass rounded-2xl p-6">
-            {/* Header */}
-            <div className="flex items-center justify-between mb-6">
+        <div className="glass rounded-2xl h-full flex flex-col overflow-hidden">
+            {/* ── Header ── */}
+            <div className="p-5 pb-0 sm:p-6 sm:pb-0 flex items-center justify-between">
                 <div>
-                    <h3 className="text-lg font-medium text-white">Funding Rate Predictor</h3>
-                    <p className="text-sm text-white/30">ML-powered 24h prediction</p>
+                    <div className="flex items-center gap-3 mb-1">
+                        <h3
+                            className="font-medium text-white"
+                            style={{ fontSize: "var(--text-lg)" }}
+                        >
+                            Funding Rate Predictor
+                        </h3>
+                        <span
+                            className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] uppercase tracking-widest font-medium"
+                            style={{
+                                background: "rgba(255,255,255,0.05)",
+                                border: "1px solid rgba(255,255,255,0.08)",
+                                color: "rgba(255,255,255,0.4)",
+                            }}
+                        >
+                            ML Model
+                        </span>
+                    </div>
+                    <p className="text-white/30" style={{ fontSize: "var(--text-xs)" }}>
+                        24h prediction · GBT + LSTM Ensemble
+                    </p>
                 </div>
-                <div className="flex items-center gap-2">
-                    <span className="px-2 py-1 rounded-md bg-white/5 text-white/50 text-xs">
-                        {accuracy}% Accuracy
+
+                {/* Accuracy badge */}
+                <div
+                    className="flex items-center gap-2 px-3 py-1.5 rounded-xl"
+                    style={{
+                        background: `linear-gradient(135deg, ${rateGlow}, transparent)`,
+                        border: `1px solid ${rateColor}33`,
+                    }}
+                >
+                    <div
+                        className="w-2 h-2 rounded-full"
+                        style={{
+                            background: rateColor,
+                            boxShadow: `0 0 8px ${rateGlow}`,
+                        }}
+                    />
+                    <span
+                        className="font-medium tabular-nums"
+                        style={{ color: rateColor, fontSize: "var(--text-sm)" }}
+                    >
+                        {accuracy}%
+                    </span>
+                    <span className="text-white/25" style={{ fontSize: "10px" }}>
+                        ACC
                     </span>
                 </div>
             </div>
 
-            {/* Current stats */}
-            <div className="grid grid-cols-3 gap-4 mb-6">
-                <div className="p-3 rounded-xl bg-white/3 text-center">
-                    <p className="text-xs text-white/30 mb-1">Current Rate</p>
-                    <p className="text-lg font-medium text-white">
-                        {latestData?.actual.toFixed(4)}%
-                    </p>
-                </div>
-                <div className="p-3 rounded-xl bg-white/3 text-center">
-                    <p className="text-xs text-white/30 mb-1">Predicted</p>
-                    <p className="text-lg font-medium text-white/70">
-                        {latestData?.predicted.toFixed(4)}%
-                    </p>
-                </div>
-                <div className="p-3 rounded-xl bg-white/3 text-center">
-                    <p className="text-xs text-white/30 mb-1">Confidence</p>
-                    <p className="text-lg font-medium text-white/50">
-                        {((latestData?.confidence || 0) * 100).toFixed(0)}%
-                    </p>
-                </div>
+            {/* ── Stats Row ── */}
+            <div
+                className="grid grid-cols-3 gap-px mx-5 sm:mx-6 mt-4 rounded-lg overflow-hidden"
+                style={{ background: "rgba(255,255,255,0.04)" }}
+            >
+                {[
+                    {
+                        label: "Current Rate",
+                        value: `${latestData?.actual.toFixed(4)}%`,
+                        color: isPositive ? "#34d399" : "#ef4444",
+                    },
+                    {
+                        label: "Predicted",
+                        value: `${latestData?.predicted.toFixed(4)}%`,
+                        color: "rgba(255,255,255,0.5)",
+                    },
+                    {
+                        label: "Confidence",
+                        value: `${((latestData?.confidence || 0) * 100).toFixed(0)}%`,
+                        color: "rgba(255,255,255,0.5)",
+                    },
+                ].map((stat) => (
+                    <div
+                        key={stat.label}
+                        className="px-3 py-2.5 sm:px-4 sm:py-3"
+                        style={{ background: "rgba(10,10,10,0.6)" }}
+                    >
+                        <div
+                            className="font-medium tabular-nums"
+                            style={{ fontSize: "var(--text-sm)", color: stat.color }}
+                        >
+                            {stat.value}
+                        </div>
+                        <div
+                            className="text-white/25 uppercase tracking-wider"
+                            style={{ fontSize: "10px" }}
+                        >
+                            {stat.label}
+                        </div>
+                    </div>
+                ))}
             </div>
 
-            {/* Chart */}
-            <div className="relative h-[180px] rounded-xl bg-black/20 overflow-hidden">
+            {/* ── Chart ── */}
+            <div
+                className="relative flex-1 min-h-0 mx-5 sm:mx-6 mt-4 rounded-xl overflow-hidden"
+                style={{ background: "rgba(0,0,0,0.2)" }}
+            >
                 <svg
                     viewBox="0 0 100 200"
                     preserveAspectRatio="none"
@@ -130,7 +211,7 @@ export default function FundingRateChart() {
                 >
                     {/* Grid */}
                     <defs>
-                        <pattern id="grid" width="10" height="20" patternUnits="userSpaceOnUse">
+                        <pattern id="fr-grid" width="10" height="20" patternUnits="userSpaceOnUse">
                             <path
                                 d="M 10 0 L 0 0 0 20"
                                 fill="none"
@@ -138,86 +219,123 @@ export default function FundingRateChart() {
                                 strokeWidth="0.2"
                             />
                         </pattern>
+                        {/* Positive gradient (green) */}
+                        <linearGradient id="positiveGradient" x1="0" x2="0" y1="0" y2="1">
+                            <stop offset="0%" stopColor="#34d399" stopOpacity="0.15" />
+                            <stop offset="100%" stopColor="#34d399" stopOpacity="0" />
+                        </linearGradient>
+                        {/* Negative gradient (red) */}
+                        <linearGradient id="negativeGradient" x1="0" x2="0" y1="0" y2="1">
+                            <stop offset="0%" stopColor="#ef4444" stopOpacity="0.15" />
+                            <stop offset="100%" stopColor="#ef4444" stopOpacity="0" />
+                        </linearGradient>
                     </defs>
-                    <rect width="100" height="200" fill="url(#grid)" />
+                    <rect width="100" height="200" fill="url(#fr-grid)" />
 
                     {/* Zero line */}
-                    {chartData.minY < 0 && chartData.maxY > 0 && (
+                    {chartData.zeroY > 0 && (
                         <line
                             x1="0"
-                            y1={200 - ((0 - chartData.minY) / (chartData.maxY - chartData.minY)) * 180 - 10}
+                            y1={chartData.zeroY}
                             x2="100"
-                            y2={200 - ((0 - chartData.minY) / (chartData.maxY - chartData.minY)) * 180 - 10}
-                            stroke="rgba(255, 255, 255, 0.1)"
+                            y2={chartData.zeroY}
+                            stroke="rgba(255, 255, 255, 0.08)"
                             strokeWidth="0.3"
                             strokeDasharray="2,2"
                         />
                     )}
 
+                    {/* Gradient fill — color-coded */}
+                    <path
+                        d={`${createPath(chartData.actualPoints)} L 95 200 L 5 200 Z`}
+                        fill={isPositive ? "url(#positiveGradient)" : "url(#negativeGradient)"}
+                    />
+
                     {/* Predicted line (dashed) */}
                     <path
                         d={createPath(chartData.predictedPoints)}
                         fill="none"
-                        stroke="rgba(255, 255, 255, 0.3)"
-                        strokeWidth="0.8"
+                        stroke="rgba(255, 255, 255, 0.25)"
+                        strokeWidth="0.6"
                         strokeDasharray="2,1"
                     />
 
-                    {/* Actual line */}
+                    {/* Actual line — color-coded */}
                     <path
                         d={createPath(chartData.actualPoints)}
                         fill="none"
-                        stroke="rgba(255, 255, 255, 0.7)"
+                        stroke={rateColor}
                         strokeWidth="1"
+                        strokeOpacity="0.8"
                     />
 
-                    {/* Gradient fill */}
-                    <defs>
-                        <linearGradient id="actualGradient" x1="0" x2="0" y1="0" y2="1">
-                            <stop offset="0%" stopColor="white" stopOpacity="0.1" />
-                            <stop offset="100%" stopColor="white" stopOpacity="0" />
-                        </linearGradient>
-                    </defs>
-                    <path
-                        d={`${createPath(chartData.actualPoints)} L 95 200 L 5 200 Z`}
-                        fill="url(#actualGradient)"
-                    />
+                    {/* Endpoint dot */}
+                    {chartData.actualPoints.length > 0 && (
+                        <>
+                            <circle
+                                cx={chartData.actualPoints[chartData.actualPoints.length - 1].x}
+                                cy={chartData.actualPoints[chartData.actualPoints.length - 1].y}
+                                r="1.5"
+                                fill={rateColor}
+                            />
+                            <circle
+                                cx={chartData.actualPoints[chartData.actualPoints.length - 1].x}
+                                cy={chartData.actualPoints[chartData.actualPoints.length - 1].y}
+                                r="3"
+                                fill={rateColor}
+                                opacity="0.2"
+                            />
+                        </>
+                    )}
                 </svg>
 
                 {/* Y-axis labels */}
-                <div className="absolute left-2 top-2 text-xs text-white/20 font-mono">
+                <div className="absolute left-2 top-2 font-mono text-white/20" style={{ fontSize: "10px" }}>
                     {chartData.maxY.toFixed(3)}%
                 </div>
-                <div className="absolute left-2 bottom-2 text-xs text-white/20 font-mono">
+                <div className="absolute left-2 bottom-2 font-mono text-white/20" style={{ fontSize: "10px" }}>
                     {chartData.minY.toFixed(3)}%
                 </div>
 
                 {/* X-axis label */}
-                <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-xs text-white/20">
+                <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-white/15" style={{ fontSize: "10px" }}>
                     Last 24 hours
                 </div>
             </div>
 
-            {/* Legend */}
-            <div className="flex items-center justify-center gap-6 mt-4 text-xs text-white/30">
-                <span className="flex items-center gap-1.5">
-                    <span className="w-4 h-0.5 bg-white/70 rounded" />
-                    Actual
-                </span>
-                <span className="flex items-center gap-1.5">
-                    <span className="w-4 h-0.5 bg-white/30 rounded" style={{ backgroundImage: "repeating-linear-gradient(90deg, rgba(255,255,255,0.3), rgba(255,255,255,0.3) 4px, transparent 4px, transparent 6px)" }} />
-                    Predicted
-                </span>
-            </div>
+            {/* ── Legend + Model Info ── */}
+            <div className="p-5 sm:p-6 pt-4 flex flex-col gap-3">
+                {/* Legend */}
+                <div className="flex items-center gap-5" style={{ fontSize: "10px" }}>
+                    <span className="flex items-center gap-1.5 text-white/30">
+                        <span className="w-1.5 h-1.5 rounded-full" style={{ background: rateColor }} />
+                        Actual
+                    </span>
+                    <span className="flex items-center gap-1.5 text-white/30">
+                        <span
+                            className="w-4 h-px"
+                            style={{
+                                backgroundImage: "repeating-linear-gradient(90deg, rgba(255,255,255,0.25), rgba(255,255,255,0.25) 3px, transparent 3px, transparent 5px)",
+                            }}
+                        />
+                        Predicted
+                    </span>
+                </div>
 
-            {/* Model info */}
-            <div className="mt-6 p-4 rounded-xl bg-white/3 text-xs text-white/30">
-                <p className="mb-1">
-                    <span className="text-white/50">Model:</span> Gradient Boosted Trees + LSTM Ensemble
-                </p>
-                <p>
-                    <span className="text-white/50">Features:</span> Order book depth, open interest, historical funding
-                </p>
+                {/* Model info */}
+                <div
+                    className="flex flex-wrap gap-x-4 gap-y-1 text-white/20"
+                    style={{ fontSize: "10px" }}
+                >
+                    <span>
+                        <span className="text-white/35">Model</span>{" "}
+                        GBT + LSTM Ensemble
+                    </span>
+                    <span>
+                        <span className="text-white/35">Features</span>{" "}
+                        Order book · Open interest · Historical funding
+                    </span>
+                </div>
             </div>
         </div>
     );

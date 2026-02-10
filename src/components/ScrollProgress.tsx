@@ -19,8 +19,12 @@ export default function ScrollProgress() {
 
     return (
         <div
-            className="fixed top-0 left-0 h-[2px] bg-white/30 z-[100] transition-all duration-100"
-            style={{ width: `${progress}%` }}
+            className="fixed top-0 left-0 h-[1px] z-[100]"
+            style={{
+                width: `${progress}%`,
+                background: "linear-gradient(90deg, rgba(255,255,255,0.15), rgba(255,255,255,0.4))",
+                transition: "width 80ms linear",
+            }}
             role="progressbar"
             aria-valuenow={Math.round(progress)}
             aria-valuemin={0}

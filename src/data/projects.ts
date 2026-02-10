@@ -49,7 +49,7 @@ export const projects: Project[] = [
         title: "KryptozGP",
         description:
             "BSC token project with custom tokenomics and community-driven mechanics. Full website and branding.",
-        tech: ["Solana", "Web3.js", "React", "Node.js"],
+        tech: ["BSC", "Web3.js", "React", "Node.js"],
         demoUrl: "https://web.archive.org/web/20241230011147/https://kryptozgp.com/",
         featured: false,
         category: "token",
