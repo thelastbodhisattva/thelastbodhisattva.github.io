@@ -1,5 +1,7 @@
 import { getAllPosts } from "@/lib/blog";
 
+export const dynamic = "force-static";
+
 const BASE_URL = "https://saammaaeel.online";
 
 export async function GET() {
